@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IoT Data Relay Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .dashboard {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff9800;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected {
+            background: #4caf50;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .sensor {
+            background: #f9f9f9;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+        }
+
+        .sensor-label {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .sensor-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .timestamp {
+            text-align: center;
+            color: #999;
+            font-size: 0.85em;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .loading {
+            text-align: center;
+            color: #999;
+            padding: 40px 20px;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔄 IoT Data Relay</h1>
+            <p>Receiving data from primary backend and sending to receiving ESP32</p>
+        </div>
+
+        <div class="dashboard">
+            <div class="error" id="error"></div>
+
+            <div class="status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+
+            <div id="dataContainer" class="loading">
+                <div class="spinner"></div>
+                <p style="margin-top: 15px;">Waiting for data...</p>
+            </div>
+
+            <div id="sensorData"></div>
+
+            <div class="timestamp">
+                Last update: <span id="timestamp">Never</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const BACKEND_URL = 'http://localhost:3001';
+        const POLL_INTERVAL = 2000;
+
+        async function fetchLatestData() {
+            try {
+                const response = await fetch(`${BACKEND_URL}/api/latest-data`);
+                const result = await response.json();
+
+                document.getElementById('error').classList.remove('show');
+
+                if (result.status === 'success' && result.data) {
+                    updateDashboard(result.data, result.timestamp);
+                    updateStatus(true);
+                } else {
+                    updateStatus(false);
+                    document.getElementById('dataContainer').innerHTML = `
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            <p style="margin-top: 15px;">Waiting for ESP32 data...</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                updateStatus(false);
+                showError('Failed to connect to backend. Make sure it\'s running.');
+            }
+        }
+
+        function updateDashboard(data, timestamp) {
+            const container = document.getElementById('sensorData');
+            container.innerHTML = `
+                <div class="sensor">
+                    <div class="sensor-label">🌡️ Temperature</div>
+                    <div class="sensor-value">${data.temperature.toFixed(1)}°C</div>
+                </div>
+
+                <div class="sensor">
+                    <div class="sensor-label">❤️ Heart Rate</div>
+                    <div class="sensor-value">${data.heartRate} BPM</div>
+                </div>
+
+                <div class="sensor">
+                    <div class="sensor-label">🔍 Motion</div>
+                    <div class="sensor-value">${data.motion ? '✓ Detected' : '✗ Not Detected'}</div>
+                </div>
+
+                <div class="sensor">
+                    <div class="sensor-label">🔘 Distance Button</div>
+                    <div class="sensor-value">${data.distanceButton ? '✓ Pressed' : '✗ Not Pressed'}</div>
+                </div>
+            `;
+
+            const date = new Date(timestamp);
+            document.getElementById('timestamp').textContent = date.toLocaleTimeString();
+            document.getElementById('dataContainer').innerHTML = '';
+        }
+
+        function updateStatus(connected) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+
+            if (connected) {
+                dot.classList.add('connected');
+                text.textContent = '✓ Connected - Data flowing';
+            } else {
+                dot.classList.remove('connected');
+                text.textContent = '⏳ Waiting for data...';
+            }
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+        }
+
+        // Poll data every 2 seconds
+        fetchLatestData();
+        setInterval(fetchLatestData, POLL_INTERVAL);
+    </script>
+</body>
+</html>
