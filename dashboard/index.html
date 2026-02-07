@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IoT Data Relay Dashboard</title>
+    <title>IoT Data Relay Dashboard - 5 Parameters</title>
     <style>
         * {
             margin: 0;
@@ -22,7 +22,7 @@
         }
 
         .container {
-            max-width: 600px;
+            max-width: 900px;
             width: 100%;
         }
 
@@ -33,13 +33,14 @@
         }
 
         .header h1 {
-            font-size: 2em;
+            font-size: 2.5em;
             margin-bottom: 10px;
             text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         }
 
         .header p {
             opacity: 0.9;
+            font-size: 1.1em;
         }
 
         .dashboard {
@@ -53,11 +54,12 @@
             display: flex;
             align-items: center;
             gap: 10px;
-            margin-bottom: 20px;
+            margin-bottom: 25px;
             padding: 15px;
             background: #f0f0f0;
             border-radius: 10px;
             font-weight: 500;
+            font-size: 1.1em;
         }
 
         .status-dot {
@@ -77,35 +79,84 @@
             50% { opacity: 0.5; }
         }
 
-        .sensor {
-            background: #f9f9f9;
-            border-left: 4px solid #667eea;
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 8px;
+        .parameters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
         }
 
-        .sensor-label {
+        .parameter-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-left: 5px solid #667eea;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .parameter-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .parameter-card.active {
+            background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
+            border-left-color: #4caf50;
+        }
+
+        .parameter-card.inactive {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            border-left-color: #ff6b6b;
+        }
+
+        .parameter-label {
             color: #666;
             font-size: 0.9em;
-            margin-bottom: 5px;
+            margin-bottom: 8px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
+            font-weight: 600;
         }
 
-        .sensor-value {
-            font-size: 2em;
+        .parameter-value {
+            font-size: 2.5em;
             font-weight: bold;
             color: #333;
+            word-break: break-all;
+        }
+
+        .parameter-unit {
+            font-size: 0.8em;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+
+        .status-indicator.on {
+            background: #4caf50;
+            color: white;
+        }
+
+        .status-indicator.off {
+            background: #f44336;
+            color: white;
         }
 
         .timestamp {
             text-align: center;
             color: #999;
-            font-size: 0.85em;
+            font-size: 0.95em;
+            padding: 20px;
+            border-top: 2px solid #eee;
             margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
         }
 
         .error {
@@ -115,6 +166,7 @@
             border-radius: 8px;
             margin-bottom: 15px;
             display: none;
+            border-left: 4px solid #c62828;
         }
 
         .error.show {
@@ -124,13 +176,13 @@
         .loading {
             text-align: center;
             color: #999;
-            padding: 40px 20px;
+            padding: 60px 20px;
         }
 
         .spinner {
             display: inline-block;
-            width: 40px;
-            height: 40px;
+            width: 50px;
+            height: 50px;
             border: 4px solid #f3f3f3;
             border-top: 4px solid #667eea;
             border-radius: 50%;
@@ -141,13 +193,19 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        .data-age {
+            font-size: 0.85em;
+            color: #999;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔄 IoT Data Relay</h1>
-            <p>Receiving data from primary backend and sending to receiving ESP32</p>
+            <h1>� IoT Data Relay Dashboard</h1>
+            <p>Real-time monitoring of 5 sensor parameters</p>
         </div>
 
         <div class="dashboard">
@@ -160,13 +218,14 @@
 
             <div id="dataContainer" class="loading">
                 <div class="spinner"></div>
-                <p style="margin-top: 15px;">Waiting for data...</p>
+                <p style="margin-top: 15px;">Waiting for data from ESP32...</p>
             </div>
 
-            <div id="sensorData"></div>
+            <div id="parametersGrid" class="parameters-grid"></div>
 
             <div class="timestamp">
-                Last update: <span id="timestamp">Never</span>
+                <strong>Last update:</strong> <span id="timestamp">Never</span>
+                <div class="data-age" id="dataAge"></div>
             </div>
         </div>
     </div>
@@ -174,6 +233,7 @@
     <script>
         const BACKEND_URL = 'http://localhost:3001';
         const POLL_INTERVAL = 2000;
+        let lastUpdateTime = null;
 
         async function fetchLatestData() {
             try {
@@ -187,47 +247,113 @@
                     updateStatus(true);
                 } else {
                     updateStatus(false);
-                    document.getElementById('dataContainer').innerHTML = `
-                        <div class="loading">
-                            <div class="spinner"></div>
-                            <p style="margin-top: 15px;">Waiting for ESP32 data...</p>
-                        </div>
-                    `;
                 }
             } catch (error) {
                 console.error('Error fetching data:', error);
                 updateStatus(false);
-                showError('Failed to connect to backend. Make sure it\'s running.');
+                showError('Failed to connect to backend. Make sure the backend is running on port 3001.');
             }
         }
 
         function updateDashboard(data, timestamp) {
-            const container = document.getElementById('sensorData');
-            container.innerHTML = `
-                <div class="sensor">
-                    <div class="sensor-label">🌡️ Temperature</div>
-                    <div class="sensor-value">${data.temperature.toFixed(1)}°C</div>
-                </div>
+            const grid = document.getElementById('parametersGrid');
+            
+            // Temperature
+            const tempCard = createParameterCard(
+                '🌡️ Temperature',
+                data.temperature.toFixed(2),
+                '°C',
+                'numeric',
+                null
+            );
 
-                <div class="sensor">
-                    <div class="sensor-label">❤️ Heart Rate</div>
-                    <div class="sensor-value">${data.heartRate} BPM</div>
-                </div>
+            // Pulse Rate
+            const pulseCard = createParameterCard(
+                '❤️ Pulse Rate',
+                data.pulseRate,
+                'BPM',
+                'numeric',
+                null
+            );
 
-                <div class="sensor">
-                    <div class="sensor-label">🔍 Motion</div>
-                    <div class="sensor-value">${data.motion ? '✓ Detected' : '✗ Not Detected'}</div>
-                </div>
+            // Distress
+            const distressCard = createParameterCard(
+                '🆘 Distress',
+                data.distress ? 'ACTIVE' : 'NORMAL',
+                '',
+                'boolean',
+                data.distress
+            );
 
-                <div class="sensor">
-                    <div class="sensor-label">🔘 Distance Button</div>
-                    <div class="sensor-value">${data.distanceButton ? '✓ Pressed' : '✗ Not Pressed'}</div>
-                </div>
-            `;
+            // RFID
+            const rfidCard = createParameterCard(
+                '🏷️ RFID',
+                data.rfid ? 'DETECTED' : 'NOT DETECTED',
+                '',
+                'boolean',
+                data.rfid
+            );
 
-            const date = new Date(timestamp);
-            document.getElementById('timestamp').textContent = date.toLocaleTimeString();
+            // IR (Infrared)
+            const irCard = createParameterCard(
+                '🔴 IR Sensor',
+                data.ir ? 'DETECTED' : 'NOT DETECTED',
+                '',
+                'boolean',
+                data.ir
+            );
+
+            grid.innerHTML = tempCard + pulseCard + distressCard + rfidCard + irCard;
+
+            // Update timestamp
+            lastUpdateTime = new Date(timestamp);
+            document.getElementById('timestamp').textContent = lastUpdateTime.toLocaleTimeString();
+            updateDataAge();
+            
+            // Hide loading message
             document.getElementById('dataContainer').innerHTML = '';
+        }
+
+        function createParameterCard(label, value, unit, type, boolValue) {
+            if (type === 'boolean') {
+                const isActive = boolValue;
+                const cardClass = isActive ? 'active' : 'inactive';
+                const indicator = isActive ? 'ON' : 'OFF';
+                const indicatorClass = isActive ? 'on' : 'off';
+                
+                return `
+                    <div class="parameter-card ${cardClass}">
+                        <div class="parameter-label">${label}</div>
+                        <div class="parameter-value">${value}</div>
+                        <div class="status-indicator ${indicatorClass}">${indicator}</div>
+                    </div>
+                `;
+            } else {
+                return `
+                    <div class="parameter-card">
+                        <div class="parameter-label">${label}</div>
+                        <div class="parameter-value">${value}</div>
+                        <div class="parameter-unit">${unit}</div>
+                    </div>
+                `;
+            }
+        }
+
+        function updateDataAge() {
+            if (!lastUpdateTime) return;
+            
+            const now = new Date();
+            const seconds = Math.floor((now - lastUpdateTime) / 1000);
+            
+            let ageText = '';
+            if (seconds < 60) {
+                ageText = `Data age: ${seconds}s`;
+            } else {
+                const minutes = Math.floor(seconds / 60);
+                ageText = `Data age: ${minutes}m ${seconds % 60}s`;
+            }
+            
+            document.getElementById('dataAge').textContent = ageText;
         }
 
         function updateStatus(connected) {
@@ -236,7 +362,7 @@
 
             if (connected) {
                 dot.classList.add('connected');
-                text.textContent = '✓ Connected - Data flowing';
+                text.textContent = '✓ Connected - Data flowing in real-time';
             } else {
                 dot.classList.remove('connected');
                 text.textContent = '⏳ Waiting for data...';
@@ -245,13 +371,16 @@
 
         function showError(message) {
             const errorDiv = document.getElementById('error');
-            errorDiv.textContent = message;
+            errorDiv.textContent = '❌ ' + message;
             errorDiv.classList.add('show');
         }
 
         // Poll data every 2 seconds
         fetchLatestData();
         setInterval(fetchLatestData, POLL_INTERVAL);
+        
+        // Update data age every second
+        setInterval(updateDataAge, 1000);
     </script>
 </body>
 </html>

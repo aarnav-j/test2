@@ -19,7 +19,13 @@ const POLL_INTERVAL = 2000; // Poll every 2 seconds
 // ===========================
 // In-Memory Storage
 // ===========================
-let latestData = null;
+let latestData = {
+  temperature: 0,
+  pulseRate: 0,
+  distress: false,
+  rfid: false,
+  ir: false
+};
 let lastUpdateTime = null;
 let receiverESPUrls = []; // Store ESP32 receiver URLs
 
@@ -45,15 +51,6 @@ app.get('/', (req, res) => {
 // Returns the latest data received from source backend
 // ===========================
 app.get('/api/latest-data', (req, res) => {
-  if (latestData === null) {
-    return res.json({
-      status: 'waiting',
-      message: 'No data received yet from source backend',
-      data: null,
-      timestamp: null
-    });
-  }
-
   res.json({
     status: 'success',
     message: 'Latest data from source backend',
@@ -165,7 +162,17 @@ setInterval(async () => {
     const response = await axios.get(SOURCE_BACKEND_URL, { timeout: 5000 });
     
     if (response.data && response.data.data) {
-      latestData = response.data.data;
+      // Extract and map all 5 parameters
+      const sourceData = response.data.data;
+      
+      latestData = {
+        temperature: sourceData.temperature || 0,
+        pulseRate: sourceData.pulseRate || sourceData.pulse_rate || 0,
+        distress: sourceData.distress || false,
+        rfid: sourceData.rfid || false,
+        ir: sourceData.ir || false
+      };
+      
       lastUpdateTime = new Date().toISOString();
       console.log(`[${lastUpdateTime}] Data fetched from source:`, latestData);
 

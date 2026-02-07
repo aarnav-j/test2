@@ -1,6 +1,7 @@
 /*
  * IoT Data Receiver - ESP32 with OLED Display & Buzzer
- * Receives sensor data from relay backend, displays on OLED, and controls Buzzer
+ * Receives 5 sensor parameters: temperature, pulseRate, distress, rfid, ir
+ * Displays all data on OLED and controls Buzzer based on distress/RFID state
  * 
  * PIN CONFIGURATION:
  * - OLED SCL → GPIO 22  (I2C Clock)
@@ -32,7 +33,6 @@
 #define I2C_SCL 22
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-TwoWire I2COne = TwoWire(0);
 
 // ===========================
 // Buzzer Configuration
@@ -58,19 +58,20 @@ const int LISTEN_PORT = 8080;
 WiFiServer server(LISTEN_PORT);
 
 // ===========================
-// Data Structure
+// Data Structure - ALL 5 PARAMETERS
 // ===========================
 struct SensorData {
-  float temperature;
-  int heartRate;
-  boolean motion;
-  boolean distanceButton;
+  float temperature;        // Temperature in Celsius (float)
+  int pulseRate;           // Pulse rate in BPM (integer)
+  boolean distress;        // Distress flag (boolean)
+  boolean rfid;            // RFID detected flag (boolean)
+  boolean ir;              // IR sensor detected flag (boolean)
 };
 
-SensorData currentData = {0, 0, false, false};
+SensorData currentData = {0, 0, false, false, false};
 unsigned long lastDataTime = 0;
-boolean isMotionActive = false;
-boolean isBuzzerActive = false;
+boolean isDistressActive = false;
+boolean isRfidActive = false;
 
 // ===========================
 // Setup Function
@@ -82,13 +83,13 @@ void setup() {
   Serial.println("\n\n");
   Serial.println("========================================");
   Serial.println("IoT Data Receiver - ESP32");
-  Serial.println("OLED + Buzzer Edition");
+  Serial.println("5-Parameter Edition (Temp, HR, Distress, RFID, IR)");
   Serial.println("========================================");
 
   // Initialize Buzzer
   ledcSetup(BUZZER_CHANNEL, BUZZER_FREQUENCY, BUZZER_RESOLUTION);
   ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
-  ledcWrite(BUZZER_CHANNEL, 0); // Start silent
+  ledcWrite(BUZZER_CHANNEL, 0);
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
   Serial.println("✓ Buzzer initialized (GPIO 18)");
@@ -109,6 +110,333 @@ void setup() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   display.println("IoT Receiver");
+  display.println("5-Parameter");
+  display.println("Initializing...");
+  display.display();
+  delay(1000);
+
+  // Connect to WiFi
+  connectToWiFi();
+
+  // Start local server to receive data
+  server.begin();
+  Serial.print("✓ Server listening on port ");
+  Serial.println(LISTEN_PORT);
+
+  // Register this ESP32 with the relay backend
+  registerWithBackend();
+  
+  // Display ready message
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Ready!");
+  display.println("Waiting for data...");
+  display.display();
+}
+
+// ===========================
+// Main Loop
+// ===========================
+void loop() {
+  // Check for incoming data from relay backend
+  WiFiClient client = server.available();
+  if (client) {
+    handleIncomingData(client);
+    client.stop();
+    
+    // Trigger buzzer on data received
+    triggerBuzzer(100, 1000);
+  }
+
+  // Update display every 500ms
+  static unsigned long lastDisplay = 0;
+  if (millis() - lastDisplay >= 500) {
+    updateDisplay();
+    lastDisplay = millis();
+  }
+
+  // Control buzzer based on distress and RFID
+  static unsigned long lastBuzzerCheck = 0;
+  if (millis() - lastBuzzerCheck >= 200) {
+    updateBuzzerState();
+    lastBuzzerCheck = millis();
+  }
+
+  // Check WiFi connection
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠ WiFi disconnected. Attempting to reconnect...");
+    connectToWiFi();
+  }
+
+  delay(10);
+}
+
+// ===========================
+// Buzzer Control - Trigger beep
+// ===========================
+void triggerBuzzer(int duration, int frequency) {
+  ledcWriteTone(BUZZER_CHANNEL, frequency);
+  delay(duration);
+  ledcWriteTone(BUZZER_CHANNEL, 0);
+}
+
+// ===========================
+// Buzzer Control - Continuous tone
+// ===========================
+void startBuzzer(int frequency) {
+  ledcWriteTone(BUZZER_CHANNEL, frequency);
+}
+
+void stopBuzzer() {
+  ledcWriteTone(BUZZER_CHANNEL, 0);
+}
+
+// ===========================
+// Update Buzzer State based on sensor data
+// ===========================
+void updateBuzzerState() {
+  // Check if data is fresh (less than 5 seconds old)
+  if (millis() - lastDataTime < 5000) {
+    
+    // Distress detected - continuous high tone
+    if (currentData.distress) {
+      if (!isDistressActive) {
+        startBuzzer(1500); // High tone for distress
+        isDistressActive = true;
+        Serial.println("🚨 DISTRESS ACTIVE - Buzzer ON");
+      }
+    } else {
+      if (isDistressActive) {
+        stopBuzzer();
+        isDistressActive = false;
+        Serial.println("✓ Distress cleared - Buzzer OFF");
+      }
+    }
+    
+    // RFID detected - quick beep pattern
+    if (currentData.rfid) {
+      if (!isRfidActive) {
+        triggerBuzzer(50, 1200); // Quick beep for RFID
+        delay(50);
+        triggerBuzzer(50, 1200);
+        isRfidActive = true;
+        Serial.println("🏷️ RFID DETECTED - Beep pattern");
+      }
+    } else {
+      isRfidActive = false;
+    }
+    
+    // IR detected - single beep
+    if (currentData.ir) {
+      static unsigned long lastIRBeep = 0;
+      if (millis() - lastIRBeep > 1000) {
+        triggerBuzzer(100, 800);
+        lastIRBeep = millis();
+        Serial.println("🔴 IR DETECTED - Beep");
+      }
+    }
+  } else {
+    stopBuzzer();
+    isDistressActive = false;
+    isRfidActive = false;
+  }
+}
+
+// ===========================
+// Connect to WiFi
+// ===========================
+void connectToWiFi() {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✓ WiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n✗ WiFi connection failed.");
+  }
+}
+
+// ===========================
+// Register with Relay Backend
+// ===========================
+void registerWithBackend() {
+  String localIP = WiFi.localIP().toString();
+  String espUrl = "http://" + localIP + ":" + String(LISTEN_PORT);
+
+  Serial.print("Registering with backend: ");
+  Serial.println(espUrl);
+  Serial.println("✓ Ready to receive data on port 8080");
+}
+
+// ===========================
+// Handle Incoming Data from Backend
+// ===========================
+void handleIncomingData(WiFiClient client) {
+  // Read HTTP request
+  String request = "";
+  while (client.available()) {
+    request += (char)client.read();
+  }
+
+  Serial.println("\n--- Received Data ---");
+  Serial.println(request);
+
+  // Parse JSON from request body
+  int bodyStart = request.indexOf("\r\n\r\n");
+  if (bodyStart != -1) {
+    String jsonBody = request.substring(bodyStart + 4);
+    
+    // Parse JSON with 5 parameters
+    StaticJsonDocument<200> jsonDoc;
+    DeserializationError error = deserializeJson(jsonDoc, jsonBody);
+
+    if (!error) {
+      // Extract all 5 parameters
+      currentData.temperature = jsonDoc["temperature"] | 0;
+      currentData.pulseRate = jsonDoc["pulseRate"] | 0;
+      currentData.distress = jsonDoc["distress"] | false;
+      currentData.rfid = jsonDoc["rfid"] | false;
+      currentData.ir = jsonDoc["ir"] | false;
+      lastDataTime = millis();
+
+      Serial.println("✓ Data parsed successfully:");
+      Serial.print("  Temperature: ");Serial.print(currentData.temperature);Serial.println("°C");
+      Serial.print("  Pulse Rate: ");Serial.print(currentData.pulseRate);Serial.println(" BPM");
+      Serial.print("  Distress: ");Serial.println(currentData.distress ? "YES" : "NO");
+      Serial.print("  RFID: ");Serial.println(currentData.rfid ? "YES" : "NO");
+      Serial.print("  IR: ");Serial.println(currentData.ir ? "YES" : "NO");
+    } else {
+      Serial.print("✗ JSON parsing error: ");
+      Serial.println(error.c_str());
+    }
+  }
+
+  // Send HTTP response
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json");
+  client.println("Connection: close");
+  client.println();
+  client.println("{\"status\":\"received\"}");
+}
+
+// ===========================
+// Update OLED Display with all 5 parameters
+// ===========================
+void updateDisplay() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+
+  // Header with WiFi status
+  display.print("IoT Recv ");
+  if (WiFi.status() == WL_CONNECTED) {
+    display.println("WiFi:OK");
+  } else {
+    display.println("WiFi:NO");
+  }
+  display.println("===========");
+
+  // Check if we have recent data
+  unsigned long timeSinceData = millis() - lastDataTime;
+  
+  if (timeSinceData < 5000) {
+    // Line 1: Temperature
+    display.print("T:");
+    display.print(currentData.temperature, 1);
+    display.print("C  HR:");
+    display.println(currentData.pulseRate);
+
+    // Line 2: Distress, RFID, IR status
+    display.print("D:");
+    display.print(currentData.distress ? "1" : "0");
+    display.print(" R:");
+    display.print(currentData.rfid ? "1" : "0");
+    display.print(" I:");
+    display.println(currentData.ir ? "1" : "0");
+
+    display.println("===========");
+    display.print("Age:");
+    display.print(timeSinceData / 1000);
+    display.println("s");
+  } else {
+    display.setTextSize(2);
+    display.println("WAITING");
+    display.println("FOR");
+    display.println("DATA");
+  }
+
+  display.display();
+}
+
+
+// ===========================
+// Data Structure - ALL 5 PARAMETERS
+// ===========================
+struct SensorData {
+  float temperature;        // Temperature in Celsius (float)
+  int pulseRate;           // Pulse rate in BPM (integer)
+  boolean distress;        // Distress flag (boolean)
+  boolean rfid;            // RFID detected flag (boolean)
+  boolean ir;              // IR sensor detected flag (boolean)
+};
+
+SensorData currentData = {0, 0, false, false, false};
+unsigned long lastDataTime = 0;
+boolean isDistressActive = false;
+boolean isRfidActive = false;
+
+// ===========================
+// Setup Function
+// ===========================
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("\n\n");
+  Serial.println("========================================");
+  Serial.println("IoT Data Receiver - ESP32");
+  Serial.println("5-Parameter Edition (Temp, HR, Distress, RFID, IR)");
+  Serial.println("========================================");
+
+  // Initialize Buzzer
+  ledcSetup(BUZZER_CHANNEL, BUZZER_FREQUENCY, BUZZER_RESOLUTION);
+  ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
+  ledcWrite(BUZZER_CHANNEL, 0);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  Serial.println("✓ Buzzer initialized (GPIO 18)");
+
+  // Initialize OLED Display with custom I2C pins
+  Wire.begin(I2C_SDA, I2C_SCL);
+  
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C, false, false)) {
+    Serial.println("✗ OLED display not found!");
+    Serial.println("  Check wiring: SDA=GPIO21, SCL=GPIO22, GND, 3V3");
+    delay(2000);
+  } else {
+    Serial.println("✓ OLED display initialized (GPIO 21/22)");
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("IoT Receiver");
+  display.println("5-Parameter");
   display.println("Initializing...");
   display.display();
   delay(1000);
@@ -199,27 +527,47 @@ void updateBuzzerState() {
   // Check if data is fresh (less than 5 seconds old)
   if (millis() - lastDataTime < 5000) {
     
-    // Motion detected - continuous low tone
-    if (currentData.motion) {
-      if (!isMotionActive) {
-        startBuzzer(800); // Low tone for motion
-        isMotionActive = true;
+    // Distress detected - continuous high tone
+    if (currentData.distress) {
+      if (!isDistressActive) {
+        startBuzzer(1500); // High tone for distress
+        isDistressActive = true;
+        Serial.println("🚨 DISTRESS ACTIVE - Buzzer ON");
       }
     } else {
-      if (isMotionActive) {
+      if (isDistressActive) {
         stopBuzzer();
-        isMotionActive = false;
+        isDistressActive = false;
+        Serial.println("✓ Distress cleared - Buzzer OFF");
       }
     }
     
-    // Button pressed - quick high beep
-    if (currentData.distanceButton) {
-      triggerBuzzer(50, 1500); // Quick high beep for button press
-      delay(50);
+    // RFID detected - quick beep pattern
+    if (currentData.rfid) {
+      if (!isRfidActive) {
+        triggerBuzzer(50, 1200); // Quick beep for RFID
+        delay(50);
+        triggerBuzzer(50, 1200);
+        isRfidActive = true;
+        Serial.println("🏷️ RFID DETECTED - Beep pattern");
+      }
+    } else {
+      isRfidActive = false;
+    }
+    
+    // IR detected - single beep
+    if (currentData.ir) {
+      static unsigned long lastIRBeep = 0;
+      if (millis() - lastIRBeep > 1000) {
+        triggerBuzzer(100, 800);
+        lastIRBeep = millis();
+        Serial.println("🔴 IR DETECTED - Beep");
+      }
     }
   } else {
     stopBuzzer();
-    isMotionActive = false;
+    isDistressActive = false;
+    isRfidActive = false;
   }
 }
 
@@ -283,26 +631,25 @@ void handleIncomingData(WiFiClient client) {
   if (bodyStart != -1) {
     String jsonBody = request.substring(bodyStart + 4);
     
-    // Parse JSON
+    // Parse JSON with 5 parameters
     StaticJsonDocument<200> jsonDoc;
     DeserializationError error = deserializeJson(jsonDoc, jsonBody);
 
     if (!error) {
-      currentData.temperature = jsonDoc["temperature"];
-      currentData.heartRate = jsonDoc["heartRate"];
-      currentData.motion = jsonDoc["motion"];
-      currentData.distanceButton = jsonDoc["distanceButton"];
+      // Extract all 5 parameters
+      currentData.temperature = jsonDoc["temperature"] | 0;
+      currentData.pulseRate = jsonDoc["pulseRate"] | 0;
+      currentData.distress = jsonDoc["distress"] | false;
+      currentData.rfid = jsonDoc["rfid"] | false;
+      currentData.ir = jsonDoc["ir"] | false;
       lastDataTime = millis();
 
       Serial.println("✓ Data parsed successfully:");
-      Serial.print("  Temperature: ");
-      Serial.println(currentData.temperature);
-      Serial.print("  Heart Rate: ");
-      Serial.println(currentData.heartRate);
-      Serial.print("  Motion: ");
-      Serial.println(currentData.motion);
-      Serial.print("  Button: ");
-      Serial.println(currentData.distanceButton);
+      Serial.print("  Temperature: ");Serial.print(currentData.temperature);Serial.println("°C");
+      Serial.print("  Pulse Rate: ");Serial.print(currentData.pulseRate);Serial.println(" BPM");
+      Serial.print("  Distress: ");Serial.println(currentData.distress ? "YES" : "NO");
+      Serial.print("  RFID: ");Serial.println(currentData.rfid ? "YES" : "NO");
+      Serial.print("  IR: ");Serial.println(currentData.ir ? "YES" : "NO");
     } else {
       Serial.print("✗ JSON parsing error: ");
       Serial.println(error.c_str());
@@ -318,7 +665,7 @@ void handleIncomingData(WiFiClient client) {
 }
 
 // ===========================
-// Update OLED Display
+// Update OLED Display with all 5 parameters
 // ===========================
 void updateDisplay() {
   display.clearDisplay();
@@ -327,45 +674,41 @@ void updateDisplay() {
   display.setCursor(0, 0);
 
   // Header with WiFi status
-  display.print("IoT Receiver  ");
+  display.print("IoT Recv ");
   if (WiFi.status() == WL_CONNECTED) {
-    display.println("WiFi:");
-    display.println("CONN");
+    display.println("WiFi:OK");
   } else {
-    display.println("WiFi:");
-    display.println("DOWN");
+    display.println("WiFi:NO");
   }
-
-  display.println("================");
+  display.println("===========");
 
   // Check if we have recent data
   unsigned long timeSinceData = millis() - lastDataTime;
   
   if (timeSinceData < 5000) {
-    // Display sensor data
-    display.print("TEMP: ");
+    // Line 1: Temperature
+    display.print("T:");
     display.print(currentData.temperature, 1);
-    display.println("C");
+    display.print("C  HR:");
+    display.println(currentData.pulseRate);
 
-    display.print("HR: ");
-    display.print(currentData.heartRate);
-    display.println(" bpm");
+    // Line 2: Distress, RFID, IR status
+    display.print("D:");
+    display.print(currentData.distress ? "1" : "0");
+    display.print(" R:");
+    display.print(currentData.rfid ? "1" : "0");
+    display.print(" I:");
+    display.println(currentData.ir ? "1" : "0");
 
-    display.print("Motion: ");
-    display.println(currentData.motion ? "[YES]" : "[NO]");
-
-    display.print("Button: ");
-    display.println(currentData.distanceButton ? "[ON]" : "[OFF]");
-
-    display.println("----------------");
-    display.print("Updated ");
+    display.println("===========");
+    display.print("Age:");
     display.print(timeSinceData / 1000);
-    display.println("s ago");
+    display.println("s");
   } else {
     display.setTextSize(2);
-    display.println("  WAITING");
-    display.println("  FOR");
-    display.println("  DATA...");
+    display.println("WAITING");
+    display.println("FOR");
+    display.println("DATA");
   }
 
   display.display();
