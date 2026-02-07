@@ -1,21 +1,18 @@
 /*
- * IoT Data Receiver - ESP32
- * Receives sensor data from relay backend and displays on OLED
+ * IoT Data Receiver - ESP32 with OLED Display & Buzzer
+ * Receives sensor data from relay backend, displays on OLED, and controls Buzzer
  * 
- * SETUP INSTRUCTIONS:
- * 1. Install Arduino IDE
- * 2. Install ESP32 board (Tools > Board Manager > search "esp32")
- * 3. Install required libraries:
- *    - Adafruit SSD1306 (for OLED display)
- *    - Adafruit GFX Library
- *    - ArduinoJson
- * 4. Connect OLED to ESP32:
- *    - SDA → GPIO 21
- *    - SCL → GPIO 22
- *    - GND → GND
- *    - VCC → 3.3V
- * 5. Update WiFi credentials and backend URL below
- * 6. Upload to ESP32
+ * PIN CONFIGURATION:
+ * - OLED SCL → GPIO 22  (I2C Clock)
+ * - OLED SDA → GPIO 21  (I2C Data)
+ * - Buzzer (+) → GPIO 18 (PWM/Tone output)
+ * - GND → GND
+ * - VCC (3.3V) → 3V3
+ * 
+ * LIBRARIES REQUIRED:
+ * - Adafruit SSD1306
+ * - Adafruit GFX Library
+ * - ArduinoJson
  */
 
 #include <WiFi.h>
@@ -31,19 +28,30 @@
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
+#define I2C_SDA 21
+#define I2C_SCL 22
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+TwoWire I2COne = TwoWire(0);
+
+// ===========================
+// Buzzer Configuration
+// ===========================
+#define BUZZER_PIN 18
+#define BUZZER_CHANNEL 0
+#define BUZZER_FREQUENCY 2000
+#define BUZZER_RESOLUTION 8
 
 // ===========================
 // WiFi Configuration
 // ===========================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "Room 003";
+const char* WIFI_PASSWORD = "20060524";
 
 // ===========================
 // Backend Configuration
 // ===========================
-const char* BACKEND_URL = "https://your-relay-backend.onrender.com";
+const char* BACKEND_URL = "https://test2-3-wu9g.onrender.com";
 const char* API_KEY = "your-secret-api-key-12345";
 const int LISTEN_PORT = 8080;
 
@@ -61,6 +69,8 @@ struct SensorData {
 
 SensorData currentData = {0, 0, false, false};
 unsigned long lastDataTime = 0;
+boolean isMotionActive = false;
+boolean isBuzzerActive = false;
 
 // ===========================
 // Setup Function
@@ -72,12 +82,26 @@ void setup() {
   Serial.println("\n\n");
   Serial.println("========================================");
   Serial.println("IoT Data Receiver - ESP32");
+  Serial.println("OLED + Buzzer Edition");
   Serial.println("========================================");
 
-  // Initialize OLED Display
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+  // Initialize Buzzer
+  ledcSetup(BUZZER_CHANNEL, BUZZER_FREQUENCY, BUZZER_RESOLUTION);
+  ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
+  ledcWrite(BUZZER_CHANNEL, 0); // Start silent
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  Serial.println("✓ Buzzer initialized (GPIO 18)");
+
+  // Initialize OLED Display with custom I2C pins
+  I2COne.begin(I2C_SDA, I2C_SCL, 100000);
+  
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C, false, false)) {
     Serial.println("✗ OLED display not found!");
-    while (1); // Halt
+    Serial.println("  Check wiring: SDA=GPIO21, SCL=GPIO22, GND, 3V3");
+    delay(2000);
+  } else {
+    Serial.println("✓ OLED display initialized (GPIO 21/22)");
   }
 
   display.clearDisplay();
@@ -87,17 +111,26 @@ void setup() {
   display.println("IoT Receiver");
   display.println("Initializing...");
   display.display();
+  delay(1000);
 
   // Connect to WiFi
   connectToWiFi();
 
   // Start local server to receive data
   server.begin();
-  Serial.print("Server listening on port ");
+  Serial.print("✓ Server listening on port ");
   Serial.println(LISTEN_PORT);
 
   // Register this ESP32 with the relay backend
   registerWithBackend();
+  
+  // Display ready message
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Ready!");
+  display.println("Waiting for data...");
+  display.display();
 }
 
 // ===========================
@@ -109,6 +142,9 @@ void loop() {
   if (client) {
     handleIncomingData(client);
     client.stop();
+    
+    // Trigger buzzer on data received
+    triggerBuzzer(100, 1000); // 100ms beep at 1000Hz
   }
 
   // Update display every 500ms
@@ -118,13 +154,73 @@ void loop() {
     lastDisplay = millis();
   }
 
+  // Control buzzer based on motion/data
+  static unsigned long lastBuzzerCheck = 0;
+  if (millis() - lastBuzzerCheck >= 200) {
+    updateBuzzerState();
+    lastBuzzerCheck = millis();
+  }
+
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected. Attempting to reconnect...");
+    Serial.println("⚠ WiFi disconnected. Attempting to reconnect...");
     connectToWiFi();
   }
 
   delay(10);
+}
+
+// ===========================
+// Buzzer Control - Trigger beep
+// ===========================
+void triggerBuzzer(int duration, int frequency) {
+  ledcWriteTone(BUZZER_CHANNEL, frequency);
+  delay(duration);
+  ledcWriteTone(BUZZER_CHANNEL, 0);
+}
+
+// ===========================
+// Buzzer Control - Continuous tone
+// ===========================
+void startBuzzer(int frequency) {
+  ledcWriteTone(BUZZER_CHANNEL, frequency);
+  isBuzzerActive = true;
+}
+
+void stopBuzzer() {
+  ledcWriteTone(BUZZER_CHANNEL, 0);
+  isBuzzerActive = false;
+}
+
+// ===========================
+// Update Buzzer State based on sensor data
+// ===========================
+void updateBuzzerState() {
+  // Check if data is fresh (less than 5 seconds old)
+  if (millis() - lastDataTime < 5000) {
+    
+    // Motion detected - continuous low tone
+    if (currentData.motion) {
+      if (!isMotionActive) {
+        startBuzzer(800); // Low tone for motion
+        isMotionActive = true;
+      }
+    } else {
+      if (isMotionActive) {
+        stopBuzzer();
+        isMotionActive = false;
+      }
+    }
+    
+    // Button pressed - quick high beep
+    if (currentData.distanceButton) {
+      triggerBuzzer(50, 1500); // Quick high beep for button press
+      delay(50);
+    }
+  } else {
+    stopBuzzer();
+    isMotionActive = false;
+  }
 }
 
 // ===========================
@@ -230,42 +326,46 @@ void updateDisplay() {
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
 
-  // WiFi Status
+  // Header with WiFi status
+  display.print("IoT Receiver  ");
   if (WiFi.status() == WL_CONNECTED) {
-    display.println("WiFi: CONNECTED");
+    display.println("WiFi:");
+    display.println("CONN");
   } else {
-    display.println("WiFi: DISCONNECTED");
+    display.println("WiFi:");
+    display.println("DOWN");
   }
 
-  display.println("---");
+  display.println("================");
 
   // Check if we have recent data
-  if (millis() - lastDataTime < 5000) {
+  unsigned long timeSinceData = millis() - lastDataTime;
+  
+  if (timeSinceData < 5000) {
     // Display sensor data
-    display.print("Temp: ");
-    display.print(currentData.temperature);
+    display.print("TEMP: ");
+    display.print(currentData.temperature, 1);
     display.println("C");
 
     display.print("HR: ");
     display.print(currentData.heartRate);
-    display.println(" BPM");
+    display.println(" bpm");
 
     display.print("Motion: ");
-    display.println(currentData.motion ? "YES" : "NO");
+    display.println(currentData.motion ? "[YES]" : "[NO]");
 
     display.print("Button: ");
-    display.println(currentData.distanceButton ? "PRESSED" : "OK");
+    display.println(currentData.distanceButton ? "[ON]" : "[OFF]");
 
-    // Last update time
-    display.println("---");
-    unsigned long secondsAgo = (millis() - lastDataTime) / 1000;
-    display.print("Update: ");
-    display.print(secondsAgo);
+    display.println("----------------");
+    display.print("Updated ");
+    display.print(timeSinceData / 1000);
     display.println("s ago");
   } else {
     display.setTextSize(2);
-    display.println("Waiting");
-    display.println("for data...");
+    display.println("  WAITING");
+    display.println("  FOR");
+    display.println("  DATA...");
   }
 
   display.display();
