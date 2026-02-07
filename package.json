@@ -1,0 +1,26 @@
+{
+  "name": "iot-data-relay-system",
+  "version": "1.0.0",
+  "description": "IoT Data Relay System - Receives data from primary backend and broadcasts to ESP32 devices",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "cd backend && node server.js",
+    "dev": "cd backend && node server.js"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "keywords": [
+    "iot",
+    "esp32",
+    "relay",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.2"
+  }
+}
