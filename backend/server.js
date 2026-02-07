@@ -197,7 +197,8 @@ async function broadcastToESP32s(data) {
 // ===========================
 // Serve Dashboard
 // ===========================
-app.use(express.static('../dashboard'));
+const path = require('path');
+app.use(express.static(path.join(__dirname, '../dashboard')));
 
 // ===========================
 // Error Handling
